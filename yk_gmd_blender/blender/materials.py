@@ -88,7 +88,6 @@ class YakuzaPropertyPanel(bpy.types.Panel):
 
             self.layout.prop(ma.yakuza_data, "attribute_set_flags")
 
-            self.layout.prop(ma.yakuza_data, "material_origin_type")
             matrix_prop("attribute_set_floats", 16, text="Attribute Set Floats")
             matrix_prop("unk12", 32, text="Unk 12")
             matrix_prop("unk14", 32, text="Unk 14 (Should be ints)")
@@ -276,18 +275,29 @@ def set_yakuza_shader_material_from_attributeset(material: bpy.types.Material, y
     shader_name = attribute_set.shader.name
     # function to set shader input
     def set_shader_input(input: str, value, ignore_if_doesnt_exist: bool = True):
-        yakuza_inputs[input].default_value = value
+        try:
+           yakuza_inputs[input].default_value = value
+        except Exception as e:
+            if ignore_if_doesnt_exist:
+                print(f'WARNING: {e} - Ignored as it is a non-vital input.')
+            else:
+                raise(e)
     def set_vector_shader_input(input: str, value: list, ignore_if_doesnt_exist: bool = True, 
                                 color: bool = True):
-        if color:
-            yakuza_inputs[input].default_value[0] = value[0]/255
-            yakuza_inputs[input].default_value[1] = value[1]/255
-            yakuza_inputs[input].default_value[2] = value[2]/255
-        else:
-            yakuza_inputs[input].default_value[0] = value[0]
-            yakuza_inputs[input].default_value[1] = value[1]
-            yakuza_inputs[input].default_value[2] = value[2]
-
+        try:
+            if color:
+                yakuza_inputs[input].default_value[0] = value[0]/255
+                yakuza_inputs[input].default_value[1] = value[1]/255
+                yakuza_inputs[input].default_value[2] = value[2]/255
+            else:
+                yakuza_inputs[input].default_value[0] = value[0]
+                yakuza_inputs[input].default_value[1] = value[1]
+                yakuza_inputs[input].default_value[2] = value[2]
+        except Exception as e:
+            if ignore_if_doesnt_exist:
+                print(f'WARNING: {e} - Ignored as it is a non-vital input.')
+            else:
+                raise(e)
     # function to set booleans to 0/1 in versions before 4.2
     def v42_bool(input: bool): 
         if input:
@@ -297,16 +307,16 @@ def set_yakuza_shader_material_from_attributeset(material: bpy.types.Material, y
     # function to set boolean shader inputs
     def set_bool_shader_input(input: str, if_condition: bool, ignore_if_doesnt_exist: bool = True):
         if if_condition:
-            set_shader_input(input, v42_bool(True), False)
+            set_shader_input(input, v42_bool(True), ignore_if_doesnt_exist)
         else:
-            set_shader_input(input, v42_bool(False), False)     
+            set_shader_input(input, v42_bool(False), ignore_if_doesnt_exist)     
     
     # COSMETIC VALUE CHECKS
-    engine = True if material.yakuza_data.material_origin_type == 4 else False
-    asset_shaders = ("r_","rs_","ss_")
-    sp_shaders = ["ds", "st_", "2s"]
+    transparent_shaders = ["_a", "_b", "_c", "_d", "_m"]
 
-    set_shader_input('Engine', 1 if engine else 0)
+    asset_shaders = ("r_","rs_","ss_")
+    sp_shaders = ["ds", "2s", "3s"]
+
     set_bool_shader_input('Has imperfection', "h2dz" in attribute_set.shader.name)
     set_bool_shader_input('Is asset shader', shader_name.startswith(asset_shaders))
     set_bool_shader_input('Is hair shader', "hair" in shader_name)
@@ -316,19 +326,23 @@ def set_yakuza_shader_material_from_attributeset(material: bpy.types.Material, y
     set_bool_shader_input('Is Y3 [rs] shader', "[rd]" not in shader_name and "[rs]" in shader_name)
     set_bool_shader_input('Is _sp shader', any([x in shader_name for x in sp_shaders]))
 
+    is_transparent_shader = re.compile(rf"^[a-z]+({'|'.join(map(re.escape, transparent_shaders))})")
+    set_bool_shader_input('Is transparent shader', is_transparent_shader.search(shader_name))
+
     # GMDMaterial data
+    set_shader_input('GMDMaterial Origin type', material.yakuza_data.material_origin_type, False)
     set_vector_shader_input('Diffuse color', attribute_set.material.origin_data.diffuse, False)
     set_shader_input('Opacity',attribute_set.material.origin_data.opacity / 255, False)
     set_vector_shader_input('Specular color', attribute_set.material.origin_data.specular, False)
     set_shader_input('Specular power',attribute_set.material.origin_data.power, False)
     set_shader_input('Specular intensity',attribute_set.material.origin_data.intensity, False)
-    set_vector_shader_input('Unknown',attribute_set.material.origin_data.unk, False, False)
-    set_shader_input('Unknown W',attribute_set.material.origin_data.unk[3], False)
     set_shader_input('Padding', attribute_set.material.origin_data.padding, False)
-    if material.yakuza_data.material_origin_type == 0:
+    if material.yakuza_data.material_origin_type == 1:
         set_vector_shader_input('Ambient color', attribute_set.material.origin_data.ambient, False)
-        set_vector_shader_input('Emissive', attribute_set.material.origin_data.emissive, False)
-
+        set_shader_input('Emissive', attribute_set.material.origin_data.emissive, False)
+    else:
+        set_vector_shader_input('Unknown',attribute_set.material.origin_data.unk, False, False)
+        set_shader_input('Unknown W',attribute_set.material.origin_data.unk[3], False)
 
     # Convenience function for creating a texture node for an Optional texture
     def set_texture(set_into: NodeSocketColor, tex_name: Optional[str],
@@ -345,8 +359,6 @@ def set_yakuza_shader_material_from_attributeset(material: bpy.types.Material, y
 
     # Create the diffuse texture
     diffuse_tex, next_y = set_texture(yakuza_inputs["texture_diffuse"], attribute_set.texture_diffuse)
-
-    transparent_shaders = ["_a", "_b", "_c", "_d", "_m"]
 
     if diffuse_tex:
         # Link the texture alpha with the Yakuza Shader, and make the material do hashed or blended alpha

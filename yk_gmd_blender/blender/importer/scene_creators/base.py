@@ -198,6 +198,10 @@ class BaseGMDSceneCreator(abc.ABC):
         material.use_backface_culling = True
         if "[hair]" in mat_yk_data.shader_name and enginever == GMDVersion.Dragon:
             material.use_backface_culling = False
+        try:
+            material.use_backface_culling_shadow = True
+        except:
+            pass
 
         if mat_yk_data.inited == True and any([x in mat_yk_data.shader_name for x in PATTERN_SHADERS]):
             uv_scaler_node = material.node_tree.nodes.new('ShaderNodeGroup')

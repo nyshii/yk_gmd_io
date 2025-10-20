@@ -248,7 +248,7 @@ class BaseGMDSceneGatherer(abc.ABC):
 
             return image_name
 
-        gmd_material_origin_version = GMDVersion(yakuza_data.material_origin_type)
+        gmd_material_origin_version = floor(yakuza_shader_node.inputs['GMDMaterial origin type'].default_value)
 
         print([round(x * 255) for x in yakuza_shader_node.inputs["Diffuse color"].default_value])
         diffuse_color = [round(x * 255) for x in yakuza_shader_node.inputs["Diffuse color"].default_value][0:3]
