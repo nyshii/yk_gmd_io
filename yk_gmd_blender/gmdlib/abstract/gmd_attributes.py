@@ -72,8 +72,8 @@ class GMDMaterial(GMDVersionRestricted):
                 opacity=int(self.origin_data.opacity * 255),
                 specular=self.origin_data.specular,
                 power=self.origin_data.power,
-                unk1=[0, 0],
-                unk2=[0, 0, 0, 0],
+                intensity=self.origin_data.intensity,
+                unk=[0, 0, 0, 0],
             )
         else:
             return self.origin_data

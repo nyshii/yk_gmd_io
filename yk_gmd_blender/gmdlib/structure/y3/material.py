@@ -12,9 +12,8 @@ class MaterialStruct_Y3(MaterialBaseStruct):
     opacity: int
     specular: List[int]
     power: float
-
-    unk1: List[int]
-    unk2: List[int]
+    intensity: float
+    unk: List[int]
 
     padding: int = 0
 
@@ -24,7 +23,7 @@ MaterialStruct_Y3_Unpack = StructureUnpacker(
     MaterialStruct_Y3,
     fields=[
         ("power", c_float16),
-        ("unk1", FixedSizeArrayUnpacker(c_uint8, 2)),
+        ("intensity", c_float16),
 
         ("specular", FixedSizeArrayUnpacker(c_uint8, 3)),
         ("padding", c_uint8),
@@ -32,6 +31,6 @@ MaterialStruct_Y3_Unpack = StructureUnpacker(
         ("diffuse", FixedSizeArrayUnpacker(c_uint8, 3)),
         ("opacity", c_uint8),
 
-        ("unk2", FixedSizeArrayUnpacker(c_uint8, 4))
+        ("unk", FixedSizeArrayUnpacker(c_uint8, 4))
     ]
 )

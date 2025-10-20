@@ -5,3 +5,6 @@
  - Shaders with reflection cubemaps are not supported simply because cubemap textures aren't supported in Blender yet.
  - Hair shaders aren't supported yet.
 
+## TO-DO LIST:
+- asset shader support?
+- find way to upgrade existing blend files?

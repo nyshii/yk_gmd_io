@@ -28,6 +28,9 @@ class YakuzaPropertyGroup(PropertyGroup):
     # Used to hide data for normal Blender materials
     inited: BoolProperty(name="Initialized", default=False)  # type: ignore
 
+    # Version of the nodegroup the material was loaded in
+    nodegroup_version: IntProperty(name='Shader Nodegroup Version') # type: ignore
+
     shader_name: StringProperty(name="Shader Name")  # type: ignore
     # These flags are stored as a hex-string encoding a 64-bit unsigned number.
     # It can't be stored as an int because blender uses primitive C types and would try to store it in 32 bits.
@@ -43,7 +46,6 @@ class YakuzaPropertyGroup(PropertyGroup):
     unk14: FloatVectorProperty(name="GMD Unk14 Data", size=32)  # type: ignore
     attribute_set_floats: FloatVectorProperty(name="GMD Attribute Set Floats", size=16)  # type: ignore
     material_origin_type: IntProperty(name="GMDMaterial origin type")  # type: ignore
-    material_json: StringProperty(name="GMDMaterial data JSON")  # type: ignore
 
 
 class YakuzaPropertyPanel(bpy.types.Panel):
@@ -87,7 +89,6 @@ class YakuzaPropertyPanel(bpy.types.Panel):
             self.layout.prop(ma.yakuza_data, "attribute_set_flags")
 
             self.layout.prop(ma.yakuza_data, "material_origin_type")
-            self.layout.prop(ma.yakuza_data, "material_json")
             matrix_prop("attribute_set_floats", 16, text="Attribute Set Floats")
             matrix_prop("unk12", 32, text="Unk 12")
             matrix_prop("unk14", 32, text="Unk 14 (Should be ints)")
@@ -148,16 +149,16 @@ class YakuzaTexturePropertyGroup(PropertyGroup):
 
 # Inspired by XNALara importer code - https://github.com/johnzero7/XNALaraMesh/blob/eaccfddf39aef8d3cb60a50c05f2585398fe26ca/material_creator.py#L527
 YAKUZA_SHADER_NODE_GROUP = "Neo Yakuza Shader"
+YAKUZA_SHADER_NODE_GROUP_VERSION = 2 # Futureproofing for whenever the shader is updated
+YAKUZA_ASSET_SHADER_NODE_GROUP = "Neo Yakuza Shader (Asset)"
 YAKUZA_UV_SCALER = "UV scaler"
+PATTERN_SHADERS = ["[rd]", "[rt]", "[rs]", "_m2"]
 
 DEFAULT_DIFFUSE_COLOR = (1, 1, 1, 1)
 DEFAULT_UNUSED_COLOR = (0, 0, 0, 1)
 DEFAULT_NORMAL_COLOR = (0.5, 0.5, 1, 1)
 DEFAULT_MULTI_COLOR = (0, 1, 0, 1)
 DEFAULT_Z_COLOR = (0.5, 1, 0.5, 1)
-
-RDRT_SHADERS = ["[rd]", "[rt]", "[rs]", "_m2"]
-
 
 def create_proxy_texture(name: str, filename: str, color: Tuple[float, float, float, float]) -> bpy.types.Image:
     """
@@ -259,6 +260,7 @@ def set_yakuza_shader_material_from_attributeset(material: bpy.types.Material, y
 
     # Setup the yakuza_data inside the material
     material.yakuza_data.inited = True
+    material.yakuza_data.nodegroup_version = YAKUZA_SHADER_NODE_GROUP_VERSION
     material.yakuza_data.shader_name = attribute_set.shader.name
     material.yakuza_data.shader_vertex_layout_flags = f"{attribute_set.shader.vertex_buffer_layout.packing_flags:016x}"
     material.yakuza_data.assume_skinned = attribute_set.shader.assume_skinned
@@ -269,53 +271,64 @@ def set_yakuza_shader_material_from_attributeset(material: bpy.types.Material, y
     material.yakuza_data.unk14 = attribute_set.unk14.int_data if attribute_set.unk14 else [0] * 32
     material.yakuza_data.attribute_set_floats = attribute_set.attr_extra_properties
     material.yakuza_data.material_origin_type = attribute_set.material.origin_version.value
-    material.yakuza_data.material_json = json.dumps(vars(attribute_set.material.origin_data))
 
-    # TODO detect if yakuza 8 is used, because that apparently uses roughness instead of glossiness (notyoshi)
+    ### Handy functions for setting nodegroup inputs!
+    shader_name = attribute_set.shader.name
+    # function to set shader input
+    def set_shader_input(input: str, value, ignore_if_doesnt_exist: bool = True):
+        yakuza_inputs[input].default_value = value
+    def set_vector_shader_input(input: str, value: list, ignore_if_doesnt_exist: bool = True, 
+                                color: bool = True):
+        if color:
+            yakuza_inputs[input].default_value[0] = value[0]/255
+            yakuza_inputs[input].default_value[1] = value[1]/255
+            yakuza_inputs[input].default_value[2] = value[2]/255
+        else:
+            yakuza_inputs[input].default_value[0] = value[0]
+            yakuza_inputs[input].default_value[1] = value[1]
+            yakuza_inputs[input].default_value[2] = value[2]
 
-    # Set the skin shader to 1 if the shader is a skin shader
-    yakuza_inputs["Skin shader"].default_value = 1.0 if "[skin]" in attribute_set.shader.name else 0.0
-
-    # variable for checking if de or oe
-    engine = 1.0 if material.yakuza_data.material_origin_type == 4 else 0.0
-
-    yakuza_inputs["Engine"].default_value = engine
-
-    # variable for checking if oe clothes shader (MT blue channel is used to blend the pattern textures in this case,
-    # instead of multiplying the specular power)
-    rdrt_shaders = ["[rd]", "[rt]", "[rs]", "_m2"]
-
-    yakuza_inputs["Is OE cloth shader"].default_value = 1.0 if any([x in attribute_set.shader.name
-                                                                    for x in rdrt_shaders]) and engine == 0 else 0.0
-
-    # variable for checking if glossiness should be inverted
-    yakuza_inputs["[rough]"].default_value = 1.0 if "[rough]" in attribute_set.shader.name else 0.0
-
-    # variable for checking if the shader actually utilizes the rd or rt slots as those, if not then it
-    # shouldnt be previewed. useful for skin materials in both OE and DE.
-    yakuza_inputs["Disable RD/RT"].default_value = 0.0 if any([x in attribute_set.shader.name for x in rdrt_shaders]) \
-        else 1.0
-
-    # check if asset shader
-    yakuza_inputs["Asset shader"].default_value = 1.0 if re.search(r'^r_', attribute_set.shader.name) or \
-                                                         re.search(r'^rs_', attribute_set.shader.name) else 0.0
-    # check if imperfection
-    yakuza_inputs["Imperfection"].default_value = 1.0 if "h2dz" in attribute_set.shader.name else 0.0
-
-    # opacity
-    yakuza_inputs["Opacity"].default_value = attribute_set.material.origin_data.opacity / 255
-
-    # oe shader params
-    yakuza_inputs["Specular color"].default_value[0] = attribute_set.material.origin_data.specular[0] / 255
-    yakuza_inputs["Specular color"].default_value[1] = attribute_set.material.origin_data.specular[1] / 255
-    yakuza_inputs["Specular color"].default_value[2] = attribute_set.material.origin_data.specular[2] / 255
-    yakuza_inputs["Specular power"].default_value = attribute_set.material.origin_data.power
-    yakuza_inputs["Is Y3 [rs] shader"].default_value = 1.0 if "[rd]" not in attribute_set.shader.name and "[rs]" \
-                                                              in attribute_set.shader.name else 0.0
-
+    # function to set booleans to 0/1 in versions before 4.2
+    def v42_bool(input: bool): 
+        if input:
+            return True if bpy.app.version >= (4, 2, 0) else 1
+        else:
+            return False if bpy.app.version >= (4, 2, 0) else 0
+    # function to set boolean shader inputs
+    def set_bool_shader_input(input: str, if_condition: bool, ignore_if_doesnt_exist: bool = True):
+        if if_condition:
+            set_shader_input(input, v42_bool(True), False)
+        else:
+            set_shader_input(input, v42_bool(False), False)     
+    
+    # COSMETIC VALUE CHECKS
+    engine = True if material.yakuza_data.material_origin_type == 4 else False
+    asset_shaders = ("r_","rs_","ss_")
     sp_shaders = ["ds", "st_", "2s"]
-    yakuza_inputs["SP shader"].default_value = 1.0 if any([x in attribute_set.shader.name for x in sp_shaders]) \
-                                                      and engine == 0 else 0.0
+
+    set_shader_input('Engine', 1 if engine else 0)
+    set_bool_shader_input('Has imperfection', "h2dz" in attribute_set.shader.name)
+    set_bool_shader_input('Is asset shader', shader_name.startswith(asset_shaders))
+    set_bool_shader_input('Is hair shader', "hair" in shader_name)
+    set_bool_shader_input('Is skin shader', "skin" in shader_name)
+    set_bool_shader_input('Is OE pattern shader', any([x in shader_name for x in PATTERN_SHADERS]))
+    set_bool_shader_input('[rough]', "[rough]" in shader_name)
+    set_bool_shader_input('Is Y3 [rs] shader', "[rd]" not in shader_name and "[rs]" in shader_name)
+    set_bool_shader_input('Is _sp shader', any([x in shader_name for x in sp_shaders]))
+
+    # GMDMaterial data
+    set_vector_shader_input('Diffuse color', attribute_set.material.origin_data.diffuse, False)
+    set_shader_input('Opacity',attribute_set.material.origin_data.opacity / 255, False)
+    set_vector_shader_input('Specular color', attribute_set.material.origin_data.specular, False)
+    set_shader_input('Specular power',attribute_set.material.origin_data.power, False)
+    set_shader_input('Specular intensity',attribute_set.material.origin_data.intensity, False)
+    set_vector_shader_input('Unknown',attribute_set.material.origin_data.unk, False, False)
+    set_shader_input('Unknown W',attribute_set.material.origin_data.unk[3], False)
+    set_shader_input('Padding', attribute_set.material.origin_data.padding, False)
+    if material.yakuza_data.material_origin_type == 0:
+        set_vector_shader_input('Ambient color', attribute_set.material.origin_data.ambient, False)
+        set_vector_shader_input('Emissive', attribute_set.material.origin_data.emissive, False)
+
 
     # Convenience function for creating a texture node for an Optional texture
     def set_texture(set_into: NodeSocketColor, tex_name: Optional[str],
@@ -333,7 +346,7 @@ def set_yakuza_shader_material_from_attributeset(material: bpy.types.Material, y
     # Create the diffuse texture
     diffuse_tex, next_y = set_texture(yakuza_inputs["texture_diffuse"], attribute_set.texture_diffuse)
 
-    transparent_shaders = ["_a", "_b", "_c", "_d", "_m", "_p"]
+    transparent_shaders = ["_a", "_b", "_c", "_d", "_m"]
 
     if diffuse_tex:
         # Link the texture alpha with the Yakuza Shader, and make the material do hashed or blended alpha
@@ -373,7 +386,9 @@ def set_yakuza_shader_material_from_attributeset(material: bpy.types.Material, y
 
 
 def append_data_from_yakuza_shader(error: ErrorReporter):
-    file_path = Path(__file__).parent / "yakuza_shader.blend"
+    blend_file = 'yakuza_shader_4.2.blend' if bpy.app.version >= (4, 2, 0) else "yakuza_shader.blend"
+
+    file_path = Path(__file__).parent / blend_file
     with bpy.data.libraries.load(str(file_path)) as (data_from, data_to):
         if YAKUZA_SHADER_NODE_GROUP not in data_from.node_groups:
             error.fatal(

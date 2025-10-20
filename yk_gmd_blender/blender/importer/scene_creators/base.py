@@ -10,7 +10,7 @@ from mathutils import Vector, Matrix
 from ..mesh.mesh_importer import gmd_meshes_to_bobj
 from ...common import GMDGame
 from ...materials import get_yakuza_shader_node_group, get_uv_scaler_node_group, \
-    set_yakuza_shader_material_from_attributeset, YakuzaPropertyGroup, RDRT_SHADERS
+    set_yakuza_shader_material_from_attributeset, YakuzaPropertyGroup, PATTERN_SHADERS
 from ....gmdlib.abstract.gmd_attributes import GMDAttributeSet
 from ....gmdlib.abstract.gmd_scene import GMDScene
 from ....gmdlib.abstract.nodes.gmd_object import GMDSkinnedObject, GMDUnskinnedObject
@@ -199,7 +199,7 @@ class BaseGMDSceneCreator(abc.ABC):
         if "[hair]" in mat_yk_data.shader_name and enginever == GMDVersion.Dragon:
             material.use_backface_culling = False
 
-        if mat_yk_data.inited == True and any([x in mat_yk_data.shader_name for x in RDRT_SHADERS]):
+        if mat_yk_data.inited == True and any([x in mat_yk_data.shader_name for x in PATTERN_SHADERS]):
             uv_scaler_node = material.node_tree.nodes.new('ShaderNodeGroup')
             uv_scaler_node.node_tree = get_uv_scaler_node_group(self.error)
 

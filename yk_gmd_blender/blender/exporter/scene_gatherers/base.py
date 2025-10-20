@@ -4,12 +4,13 @@ import re
 from dataclasses import dataclass
 from enum import Enum
 from typing import List, Dict, Optional, cast, Tuple
+from math import floor
 
 import bpy
 from bpy.types import ShaderNodeGroup, ShaderNodeTexImage
 from mathutils import Vector
 from ...common import GMDGame, YakuzaFileRootData
-from ...materials import YAKUZA_SHADER_NODE_GROUP, RDRT_SHADERS
+from ...materials import YAKUZA_SHADER_NODE_GROUP, PATTERN_SHADERS
 from ...materials import YakuzaPropertyGroup
 from ....gmdlib.abstract.gmd_attributes import GMDAttributeSet, GMDUnk12, GMDUnk14, GMDMaterial
 from ....gmdlib.abstract.gmd_scene import GMDScene, HierarchyData
@@ -249,34 +250,57 @@ class BaseGMDSceneGatherer(abc.ABC):
 
         gmd_material_origin_version = GMDVersion(yakuza_data.material_origin_type)
 
+        print([round(x * 255) for x in yakuza_shader_node.inputs["Diffuse color"].default_value])
+        diffuse_color = [round(x * 255) for x in yakuza_shader_node.inputs["Diffuse color"].default_value][0:3]
+        specular_color = [round(x * 255) for x in yakuza_shader_node.inputs["Specular color"].default_value][0:3]
+        unknown = [floor(x) for x in yakuza_shader_node.inputs["Unknown"].default_value]
+        unknown.append(floor(yakuza_shader_node.inputs['Unknown W'].default_value))
+        power = yakuza_shader_node.inputs["Specular power"].default_value
+        intensity = yakuza_shader_node.inputs["Specular intensity"].default_value
+        opacity = round(yakuza_shader_node.inputs["Opacity"].default_value*255)
+        ambient = [round(x * 255) for x in yakuza_shader_node.inputs["Ambient color"].default_value][0:3]
+        emissive = yakuza_shader_node.inputs["Emissive"].default_value
+        padding = floor(yakuza_shader_node.inputs['Padding'].default_value)
+
+
         if gmd_material_origin_version == GMDVersion.Kenzan:
             gmd_material = GMDMaterial(
                 origin_version=gmd_material_origin_version,
-                origin_data=MaterialStruct_Kenzan(**json.loads(yakuza_data.material_json))
+                origin_data=MaterialStruct_Kenzan(
+                    diffuse=diffuse_color,
+                    opacity=opacity,
+                    specular=specular_color,
+                    ambient=ambient,
+                    emissive=emissive,
+                    power=power,
+                    intensity=intensity,
+                    padding=padding
+                )
             )
         else:
             gmd_material = GMDMaterial(
                 origin_version=gmd_material_origin_version,
-                origin_data=MaterialStruct_Y3(**json.loads(yakuza_data.material_json))
+                origin_data=MaterialStruct_Y3(
+                    diffuse=diffuse_color,
+                    opacity=opacity,
+                    specular=specular_color,
+                    power=power,
+                    intensity=intensity,
+                    unk=unknown
+            )
             )
 
         # TODO - Add a check for "missing expected texture". Put "expected textures" in Material Yakuza Data,
         #  and compare against provided in the node.
         # TODO - image nodes will null textures exist - those currently break the export
 
-        # gmd material override... dunno how else to do this!
 
-        gmd_material.origin_data.specular[0] = round(yakuza_shader_node.inputs["Specular color"].default_value[0] * 255)
-        gmd_material.origin_data.specular[1] = round(yakuza_shader_node.inputs["Specular color"].default_value[1] * 255)
-        gmd_material.origin_data.specular[2] = round(yakuza_shader_node.inputs["Specular color"].default_value[2] * 255)
-        gmd_material.origin_data.power = yakuza_shader_node.inputs["Specular power"].default_value
-        gmd_material.origin_data.opacity = round(yakuza_shader_node.inputs["Opacity"].default_value * 255)
 
         uv_node = [node for node in material.node_tree.nodes if node.bl_idname == "ShaderNodeGroup" and
                    node.node_tree.name == "UV scaler"]
 
         if len(uv_node) == 1:
-            if not any([x in yakuza_data.shader_name for x in RDRT_SHADERS]):
+            if not any([x in yakuza_data.shader_name for x in PATTERN_SHADERS]):
                 self.error.recoverable(
                     f"Blender material '{material.name}' contains a UV scaler node, "
                     f"but the shader may not support UV scaling. "
