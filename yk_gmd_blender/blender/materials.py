@@ -435,7 +435,7 @@ def set_yakuza_shader_material_from_attributeset(material: bpy.types.Material, y
     
     # COSMETIC VALUE CHECKS
     set_bool_shader_input('[rough]', "[rough]" in decoded_shader_name['tags']) 
-    set_bool_shader_input('Is transparent shader', decoded_shader_name['transparency'] == 'dither' or decoded_shader_name['transparency'] == 'blend')
+    set_bool_shader_input('Uses opacity', decoded_shader_name['transparency'] == 'blend')
     set_bool_shader_input('Is _sp shader', any('specular' in d for d in decoded_shader_name["textures"]))
     if material.yakuza_data.assume_skinned:
         set_bool_shader_input('Has imperfection', "h2dz" in shader_name)

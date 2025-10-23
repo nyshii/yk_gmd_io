@@ -298,7 +298,7 @@ class BaseGMDSceneCreator(abc.ABC):
 
                     if socket.to_socket.name == 'texture_rs' and \
                     any(d['mix_mask'] == '(vr3i)' for d in decoded_shader_name["textures"].values()):
-                            material.node_tree.links.new(uv_scaler_node.outputs[6], x.from_node.inputs[0])
+                            material.node_tree.links.new(uv_scaler_node.outputs[6], socket.from_node.inputs[0])
 
         self.material_id_to_blender[id(gmd_attribute_set)] = material
         return material
