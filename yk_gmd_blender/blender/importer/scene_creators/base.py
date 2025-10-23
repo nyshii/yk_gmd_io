@@ -10,6 +10,7 @@ from mathutils import Vector, Matrix
 from ..mesh.mesh_importer import gmd_meshes_to_bobj
 from ...common import GMDGame
 from ...materials import get_yakuza_shader_node_group, get_uv_scaler_node_group, \
+    get_yakuza_asset_shader_node_group, get_asset_uvs_node_group, decode_shader_name, \
     set_yakuza_shader_material_from_attributeset, YakuzaPropertyGroup, PATTERN_SHADERS
 from ....gmdlib.abstract.gmd_attributes import GMDAttributeSet
 from ....gmdlib.abstract.gmd_scene import GMDScene
@@ -153,7 +154,10 @@ class BaseGMDSceneCreator(abc.ABC):
 
         def make_yakuza_node_group(node_tree: bpy.types.NodeTree):
             node = node_tree.nodes.new("ShaderNodeGroup")
-            node.node_tree = get_yakuza_shader_node_group(self.error)
+            if gmd_attribute_set.shader.assume_skinned:
+                node.node_tree = get_yakuza_shader_node_group(self.error)
+            else:
+                node.node_tree = get_yakuza_asset_shader_node_group(self.error)
             return node
 
         if self.config.material_naming_convention == MaterialNamingType.Collection_Shader:
@@ -203,44 +207,98 @@ class BaseGMDSceneCreator(abc.ABC):
         except:
             pass
 
-        if mat_yk_data.inited == True and any([x in mat_yk_data.shader_name for x in PATTERN_SHADERS]):
-            uv_scaler_node = material.node_tree.nodes.new('ShaderNodeGroup')
-            uv_scaler_node.node_tree = get_uv_scaler_node_group(self.error)
+        if mat_yk_data.inited == True:
+            if gmd_attribute_set.shader.assume_skinned:
+                    if any([x in mat_yk_data.shader_name for x in PATTERN_SHADERS]):
+                        # Skinned UVs
+                        uv_scaler_node = material.node_tree.nodes.new('ShaderNodeGroup')
+                        uv_scaler_node.node_tree = get_uv_scaler_node_group(self.error)
+                        
+                        if enginever == GMDVersion.Dragon:
+                            rtpos = mat_yk_data.unk12[6]
+                            rtpos2 = mat_yk_data.unk12[7]
+                            rdpos = mat_yk_data.unk12[4]
+                            rdpos2 = mat_yk_data.unk12[5]
+                        else:
+                            if "[rd]" not in mat_yk_data.shader_name and "[rt]" not in mat_yk_data.shader_name:
+                                rtpos = mat_yk_data.unk12[2]
+                                rtpos2 = mat_yk_data.unk12[3]
+                                rdpos = mat_yk_data.attribute_set_floats[8]
+                                rdpos2 = mat_yk_data.attribute_set_floats[9]
+                            else:
+                                rtpos = mat_yk_data.attribute_set_floats[8]
+                                rtpos2 = mat_yk_data.attribute_set_floats[9]
+                                rdpos = mat_yk_data.unk12[8]
+                                rdpos2 = mat_yk_data.unk12[9]
 
-            if enginever == GMDVersion.Dragon:
-                rtpos = mat_yk_data.unk12[6]
-                rtpos2 = mat_yk_data.unk12[7]
-                rdpos = mat_yk_data.unk12[4]
-                rdpos2 = mat_yk_data.unk12[5]
+                        uv_scaler_node.inputs[0].default_value = rtpos  # RT X
+                        uv_scaler_node.inputs[1].default_value = rtpos2  # RT Y
+                        uv_scaler_node.inputs[2].default_value = rdpos  # R(D/S/M) X
+                        uv_scaler_node.inputs[3].default_value = rdpos2  # ^ Y
+                        uv_scaler_node.inputs[4].default_value = mat_yk_data.unk12[12]  # imperfection (UV1 * (2 ^ x))
+                        uv_scaler_node.inputs[5].default_value = 1.0 if enginever == GMDVersion.Dragon else 0.0
+
+                        uv_scaler_node.location = (-750, -300)
+                        for x in material.node_tree.links:
+                            rdrm_textures = ["texture_rd", "texture_rm", "texture_rs"]
+                            if "skin" not in mat_yk_data.shader_name and any([y in x.to_socket.name
+                                                                            for y in rdrm_textures]):
+                                material.node_tree.links.new(uv_scaler_node.outputs[1], x.from_node.inputs[0])
+                            if x.to_socket.name == "texture_rt":
+                                material.node_tree.links.new(uv_scaler_node.outputs[2], x.from_node.inputs[0])
+                            if x.to_socket.name == "texture_refl" and "h2dz" in mat_yk_data.shader_name:
+                                material.node_tree.links.new(uv_scaler_node.outputs[0], x.from_node.inputs[0])
             else:
-                if "[rd]" not in mat_yk_data.shader_name and "[rt]" not in mat_yk_data.shader_name:
-                    rtpos = mat_yk_data.unk12[2]
-                    rtpos2 = mat_yk_data.unk12[3]
-                    rdpos = mat_yk_data.attribute_set_floats[8]
-                    rdpos2 = mat_yk_data.attribute_set_floats[9]
-                else:
-                    rtpos = mat_yk_data.attribute_set_floats[8]
-                    rtpos2 = mat_yk_data.attribute_set_floats[9]
-                    rdpos = mat_yk_data.unk12[8]
-                    rdpos2 = mat_yk_data.unk12[9]
+                # Unskinned UVs
+                uv_scaler_node = material.node_tree.nodes.new('ShaderNodeGroup')
+                uv_scaler_node.node_tree = get_asset_uvs_node_group(self.error)
+                decoded_shader_name = decode_shader_name(mat_yk_data.shader_name)
+                
+                for x in range(16):
+                    uv_scaler_node.inputs[x].default_value = mat_yk_data.unk12[x]
 
-            uv_scaler_node.inputs[0].default_value = rtpos  # RT X
-            uv_scaler_node.inputs[1].default_value = rtpos2  # RT Y
-            uv_scaler_node.inputs[2].default_value = rdpos  # R(D/S/M) X
-            uv_scaler_node.inputs[3].default_value = rdpos2  # ^ Y
-            uv_scaler_node.inputs[4].default_value = mat_yk_data.unk12[12]  # imperfection (UV1 * (2 ^ x))
-            uv_scaler_node.inputs[5].default_value = 1.0 if enginever == GMDVersion.Dragon else 0.0
+                def connect_uvs(texture_input,uv,texture_type,socket):
+                    if socket.to_socket.name == texture_input:
+                        uv = (uv * 3) + texture_type
+                        print(f'DEBUG: {texture_input} uv: {uv}')
+                        material.node_tree.links.new(uv_scaler_node.outputs[uv], socket.from_node.inputs[0])
+                
+                diffuse_priority = ('texture_diffuse', 'texture_refl', 'texture_rd') if enginever != GMDVersion.Dragon \
+                else ('texture_diffuse', 'texture_rd', 'texture_refl')
+                multi_priority = ('texture_rm', 'texture_rs') if enginever != GMDVersion.Dragon \
+                else ('texture_multi', 'texture_rm')
+                normal_priority = ('texture_normal', 'texture_rt')
 
-            uv_scaler_node.location = (-750, -300)
-            for x in material.node_tree.links:
-                rdrm_textures = ["texture_rd", "texture_rm", "texture_rs"]
-                if "skin" not in mat_yk_data.shader_name and any([y in x.to_socket.name
-                                                                  for y in rdrm_textures]):
-                    material.node_tree.links.new(uv_scaler_node.outputs[1], x.from_node.inputs[0])
-                if x.to_socket.name == "texture_rt":
-                    material.node_tree.links.new(uv_scaler_node.outputs[2], x.from_node.inputs[0])
-                if x.to_socket.name == "texture_refl" and "h2dz" in mat_yk_data.shader_name:
-                    material.node_tree.links.new(uv_scaler_node.outputs[0], x.from_node.inputs[0])
+                texture_types = {
+                    'diffuse' : (0, diffuse_priority),
+                    'multi' : (1, multi_priority),
+                    'multi_asset' : (1, multi_priority),
+                    'specular' : (1, multi_priority),
+                    'normal' : (2, normal_priority),
+                }
+
+                uv_scaler_node.location = (-800, -300)
+                for socket in material.node_tree.links:
+                    for tex in decoded_shader_name['textures']:
+                        tex_UV = int(tex[-1])
+                        tex_IDX = int(tex[-5])
+                        texture_type = texture_types.get(tex[0:-5],(0,'texture_diffuse'))
+                        
+                        if decoded_shader_name['textures'][tex]['mix'] == 'multiply' \
+                        and tex_UV == 3 and tex[0:-5] == 'diffuse':
+                            connect_uvs('texture_rd',3,0,socket)
+                        elif len(texture_type[1]) >= tex_IDX + 1:
+                            connect_uvs(
+                                texture_type[1][tex_IDX],
+                                tex_UV,
+                                texture_type[0],
+                                socket
+                            )
+                        
+
+                    if socket.to_socket.name == 'texture_rs' and \
+                    any(d['mix_mask'] == '(vr3i)' for d in decoded_shader_name["textures"].values()):
+                            material.node_tree.links.new(uv_scaler_node.outputs[6], x.from_node.inputs[0])
 
         self.material_id_to_blender[id(gmd_attribute_set)] = material
         return material

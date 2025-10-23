@@ -10,7 +10,7 @@ import bpy
 from bpy.types import ShaderNodeGroup, ShaderNodeTexImage
 from mathutils import Vector
 from ...common import GMDGame, YakuzaFileRootData
-from ...materials import YAKUZA_SHADER_NODE_GROUP, PATTERN_SHADERS
+from ...materials import YAKUZA_SHADER_NODE_GROUP, PATTERN_SHADERS, YAKUZA_ASSET_SHADER_NODE_GROUP
 from ...materials import YakuzaPropertyGroup
 from ....gmdlib.abstract.gmd_attributes import GMDAttributeSet, GMDUnk12, GMDUnk14, GMDMaterial
 from ....gmdlib.abstract.gmd_scene import GMDScene, HierarchyData
@@ -195,8 +195,9 @@ class BaseGMDSceneGatherer(abc.ABC):
                 f"and cannot be exported.\n"
                 f"A Yakuza Material must have valid Yakuza Properties, and must have exactly one Yakuza Shader node.")
 
+        yakuza_shader = YAKUZA_SHADER_NODE_GROUP if material.yakuza_data.assume_skinned else YAKUZA_ASSET_SHADER_NODE_GROUP
         yakuza_shader_nodes = [node for node in material.node_tree.nodes if
-                               node.bl_idname == "ShaderNodeGroup" and node.node_tree.name == YAKUZA_SHADER_NODE_GROUP]
+                               node.bl_idname == "ShaderNodeGroup" and node.node_tree.name == yakuza_shader]
         self.error.debug("MATERIAL", str([node.name for node in material.node_tree.nodes]))
         self.error.debug("MATERIAL", str([node.bl_idname for node in material.node_tree.nodes]))
         self.error.debug("MATERIAL", str([node.bl_label for node in material.node_tree.nodes]))
@@ -248,9 +249,8 @@ class BaseGMDSceneGatherer(abc.ABC):
 
             return image_name
 
-        gmd_material_origin_version = floor(yakuza_shader_node.inputs['GMDMaterial origin type'].default_value)
+        gmd_material_origin_version = floor(yakuza_shader_node.inputs['GMDMaterial Origin type'].default_value)
 
-        print([round(x * 255) for x in yakuza_shader_node.inputs["Diffuse color"].default_value])
         diffuse_color = [round(x * 255) for x in yakuza_shader_node.inputs["Diffuse color"].default_value][0:3]
         specular_color = [round(x * 255) for x in yakuza_shader_node.inputs["Specular color"].default_value][0:3]
         unknown = [floor(x) for x in yakuza_shader_node.inputs["Unknown"].default_value]
@@ -261,7 +261,6 @@ class BaseGMDSceneGatherer(abc.ABC):
         ambient = [round(x * 255) for x in yakuza_shader_node.inputs["Ambient color"].default_value][0:3]
         emissive = yakuza_shader_node.inputs["Emissive"].default_value
         padding = floor(yakuza_shader_node.inputs['Padding'].default_value)
-
 
         if gmd_material_origin_version == GMDVersion.Kenzan:
             gmd_material = GMDMaterial(
@@ -295,46 +294,56 @@ class BaseGMDSceneGatherer(abc.ABC):
         # TODO - image nodes will null textures exist - those currently break the export
 
 
+        if yakuza_data.assume_skinned:
+            uv_node = [node for node in material.node_tree.nodes if node.bl_idname == "ShaderNodeGroup" and
+                    node.node_tree.name == "UV scaler"]
 
-        uv_node = [node for node in material.node_tree.nodes if node.bl_idname == "ShaderNodeGroup" and
-                   node.node_tree.name == "UV scaler"]
+            if len(uv_node) == 1:
+                if not any([x in yakuza_data.shader_name for x in PATTERN_SHADERS]):
+                    self.error.recoverable(
+                        f"Blender material '{material.name}' contains a UV scaler node, "
+                        f"but the shader may not support UV scaling. "
+                        f"This may produce unexpected results. Disable Strict Export to continue."
+                    )
 
-        if len(uv_node) == 1:
-            if not any([x in yakuza_data.shader_name for x in PATTERN_SHADERS]):
-                self.error.recoverable(
-                    f"Blender material '{material.name}' contains a UV scaler node, "
-                    f"but the shader may not support UV scaling. "
-                    f"This may produce unexpected results. Disable Strict Export to continue."
-                )
+                rtpos = uv_node[0].inputs[0].default_value  # RT X
+                rtpos2 = uv_node[0].inputs[1].default_value  # RT Y
+                rdpos = uv_node[0].inputs[2].default_value  # R(D/S/M) X
+                rdpos2 = uv_node[0].inputs[3].default_value  # ^ Y
 
-            rtpos = uv_node[0].inputs[0].default_value  # RT X
-            rtpos2 = uv_node[0].inputs[1].default_value  # RT Y
-            rdpos = uv_node[0].inputs[2].default_value  # R(D/S/M) X
-            rdpos2 = uv_node[0].inputs[3].default_value  # ^ Y
+                if gmd_material_origin_version == GMDVersion.Dragon:
+                    imperfection = uv_node[0].inputs[4].default_value  # imperfection
 
-            if gmd_material_origin_version == GMDVersion.Dragon:
-                imperfection = uv_node[0].inputs[4].default_value  # imperfection
-
-                yakuza_data.unk12[6] = rtpos
-                yakuza_data.unk12[7] = rtpos2
-                yakuza_data.unk12[4] = rdpos
-                yakuza_data.unk12[5] = rdpos2
-                yakuza_data.unk12[12] = imperfection
-            else:
-                if "[rd]" not in shader.name and "[rt]" not in shader.name:
-                    yakuza_data.unk12[2] = rtpos
-                    yakuza_data.unk12[3] = rtpos2
-                    yakuza_data.attribute_set_floats[8] = rdpos
-                    yakuza_data.attribute_set_floats[9] = rdpos2
+                    yakuza_data.unk12[6] = rtpos
+                    yakuza_data.unk12[7] = rtpos2
+                    yakuza_data.unk12[4] = rdpos
+                    yakuza_data.unk12[5] = rdpos2
+                    yakuza_data.unk12[12] = imperfection
                 else:
-                    yakuza_data.attribute_set_floats[8] = rtpos
-                    yakuza_data.attribute_set_floats[9] = rtpos2
-                    yakuza_data.unk12[8] = rdpos
-                    yakuza_data.unk12[9] = rdpos2
+                    if "[rd]" not in shader.name and "[rt]" not in shader.name:
+                        yakuza_data.unk12[2] = rtpos
+                        yakuza_data.unk12[3] = rtpos2
+                        yakuza_data.attribute_set_floats[8] = rdpos
+                        yakuza_data.attribute_set_floats[9] = rdpos2
+                    else:
+                        yakuza_data.attribute_set_floats[8] = rtpos
+                        yakuza_data.attribute_set_floats[9] = rtpos2
+                        yakuza_data.unk12[8] = rdpos
+                        yakuza_data.unk12[9] = rdpos2
 
-        elif len(uv_node) > 1:
-            self.error.fatal(f"Too many UV scaler nodes in " + material.name + "!")
+            elif len(uv_node) > 1:
+                self.error.fatal(f"Too many UV scaler nodes in " + material.name + "!")
+        else:
+            uv_node = [node for node in material.node_tree.nodes if node.bl_idname == "ShaderNodeGroup" and
+                    node.node_tree.name == "Asset UVs"]
 
+            if len(uv_node) == 1:
+                for x in range(16):
+                    yakuza_data.unk12[x] = uv_node[0].inputs[x].default_value
+
+            elif len(uv_node) > 1:
+                self.error.fatal(f"Too many Asset UVs nodes in " + material.name + "!")
+                
         attribute_set = GMDAttributeSet(
             shader=shader,
 

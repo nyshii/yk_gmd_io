@@ -3,6 +3,7 @@ import os
 import re
 from pathlib import Path
 from typing import Optional, Tuple, cast
+from collections import defaultdict
 
 import bpy
 from bpy.props import FloatVectorProperty, StringProperty, BoolProperty, IntProperty
@@ -30,6 +31,7 @@ class YakuzaPropertyGroup(PropertyGroup):
 
     # Version of the nodegroup the material was loaded in
     nodegroup_version: IntProperty(name='Shader Nodegroup Version') # type: ignore
+    asset_nodegroup_version: IntProperty(name='Asset Shader Nodegroup Version') # type: ignore
 
     shader_name: StringProperty(name="Shader Name")  # type: ignore
     # These flags are stored as a hex-string encoding a 64-bit unsigned number.
@@ -150,7 +152,9 @@ class YakuzaTexturePropertyGroup(PropertyGroup):
 YAKUZA_SHADER_NODE_GROUP = "Neo Yakuza Shader"
 YAKUZA_SHADER_NODE_GROUP_VERSION = 2 # Futureproofing for whenever the shader is updated
 YAKUZA_ASSET_SHADER_NODE_GROUP = "Neo Yakuza Shader (Asset)"
+YAKUZA_ASSET_SHADER_NODE_GROUP_VERSION = 1
 YAKUZA_UV_SCALER = "UV scaler"
+YAKUZA_ASSET_UVS = "Asset UVs"
 PATTERN_SHADERS = ["[rd]", "[rt]", "[rs]", "_m2"]
 
 DEFAULT_DIFFUSE_COLOR = (1, 1, 1, 1)
@@ -242,6 +246,121 @@ def load_texture_from_name(node_tree: bpy.types.NodeTree, gmd_folder: str, tex_n
 
     return cast(ShaderNodeTexImage, image_node)
 
+   # Function to analyze the shader name
+def decode_shader_name(shader_name):
+    token_split_re = re.compile(r'(?=(?:_[a-zA-Z0-9(])|(?:[0-9]))(?![^\[\(]*[\]\)])')
+    tag_re = re.compile(r'\[[^\[\]]+\]?')
+    mix_token_re = re.compile(r'^(_[A-Za-z0-9]+)(\([^\)]*\))?$')
+
+    print(shader_name)
+    decoded_shader = {}
+
+    shader_textures_dict = {
+        "d": "diffuse",
+        "m": "diffuse",
+        "x": "diffuse",
+        "s": "specular",
+        "z": "multi",
+        "u": "multi_asset",
+        "t": "normal",
+        "i": "emit",
+        "h": "hair",
+    }
+
+    shader_mix_dict = {
+        "_a": "add",
+        "_b": "blend",
+        "_m": "multiply",
+        "_sss": "sss",
+    }
+
+    transparent_shader_dict = {
+        "o": "opaque",
+        "b": "blend",
+        "c": "dither",
+        "d": "blend",
+        "p": "dither",
+    }
+
+    shader_prefixes_dict = {
+        "s":"skinned",
+        "r":"unskinned",
+        "sd":"skinned",
+        "rs":"unskinned",
+        "ss":"skinned",
+        "sw":"skinned",
+    }
+
+    # split prefix and remaining name
+    prefix, _, rest = shader_name.partition('_')
+    decoded_shader['shader_type'] = shader_prefixes_dict.get(prefix, prefix)
+
+    if rest:
+        trans_char, rest = rest[0], rest[1:]
+        decoded_shader['transparency'] = transparent_shader_dict.get(trans_char, trans_char)
+    else:
+        decoded_shader['transparency'] = ''
+
+    split_shader_name = [t for t in token_split_re.split(rest) if t]
+
+    tags = []
+    pending_mix = ''
+    pending_mix_mask = ''
+    tex_get = shader_textures_dict.get
+    mix_get = shader_mix_dict.get
+
+    textures = {}
+    counters = defaultdict(int)   # track index per texture base (diffuse, specular, ...)
+
+    for split in split_shader_name:
+        found = tag_re.findall(split)
+        if found:
+            tags.extend(found)
+            split = tag_re.sub('', split)
+
+        if not split:
+            continue
+
+        if split[0].isdigit():
+            # if 1st character is a digit its a UV, check its textures
+            uv = 0
+            for ch in split:
+                if ch.isdigit():
+                    uv = int(ch) - 1
+                else:
+                    mapped = tex_get(ch, ch)
+                    idx = counters[mapped]
+                    key_name = f"{mapped}{idx}_uv{uv}"
+                    counters[mapped] += 1
+
+                    textures.update({
+                        key_name : {
+                        "mix": mix_get(pending_mix, pending_mix) if pending_mix else '',
+                        "mix_mask": pending_mix_mask if pending_mix_mask else ''
+                        }
+                    })
+
+            pending_mix = ''
+            pending_mix_mask = ''
+
+        elif split[0] == "_":
+            # if 1st char is an underscore it's the mixing method 
+
+            # separate base mix like "_b" from optional mask "(vr)"
+            m = mix_token_re.match(split)
+            if m:
+                pending_mix = m.group(1)
+                pending_mix_mask = m.group(2) or ''
+            else:
+                pending_mix = split
+                pending_mix_mask = ''
+
+    decoded_shader["tags"] = tags
+    decoded_shader['textures'] = textures
+    decoded_shader['uvs'] = len(set(x[-1] for x in textures))
+
+    print(decoded_shader)
+    return decoded_shader
 
 def set_yakuza_shader_material_from_attributeset(material: bpy.types.Material, yakuza_inputs: bpy.types.NodeInputs,
                                                  attribute_set: GMDAttributeSet, gmd_folder: str):
@@ -260,6 +379,7 @@ def set_yakuza_shader_material_from_attributeset(material: bpy.types.Material, y
     # Setup the yakuza_data inside the material
     material.yakuza_data.inited = True
     material.yakuza_data.nodegroup_version = YAKUZA_SHADER_NODE_GROUP_VERSION
+    material.yakuza_data.asset_nodegroup_version = YAKUZA_ASSET_SHADER_NODE_GROUP_VERSION
     material.yakuza_data.shader_name = attribute_set.shader.name
     material.yakuza_data.shader_vertex_layout_flags = f"{attribute_set.shader.vertex_buffer_layout.packing_flags:016x}"
     material.yakuza_data.assume_skinned = attribute_set.shader.assume_skinned
@@ -273,6 +393,7 @@ def set_yakuza_shader_material_from_attributeset(material: bpy.types.Material, y
 
     ### Handy functions for setting nodegroup inputs!
     shader_name = attribute_set.shader.name
+    decoded_shader_name = decode_shader_name(material.yakuza_data.shader_name)
     # function to set shader input
     def set_shader_input(input: str, value, ignore_if_doesnt_exist: bool = True):
         try:
@@ -282,6 +403,7 @@ def set_yakuza_shader_material_from_attributeset(material: bpy.types.Material, y
                 print(f'WARNING: {e} - Ignored as it is a non-vital input.')
             else:
                 raise(e)
+    # function to set shader inputs that are vectors
     def set_vector_shader_input(input: str, value: list, ignore_if_doesnt_exist: bool = True, 
                                 color: bool = True):
         try:
@@ -312,22 +434,61 @@ def set_yakuza_shader_material_from_attributeset(material: bpy.types.Material, y
             set_shader_input(input, v42_bool(False), ignore_if_doesnt_exist)     
     
     # COSMETIC VALUE CHECKS
-    transparent_shaders = ["_a", "_b", "_c", "_d", "_m"]
+    set_bool_shader_input('[rough]', "[rough]" in decoded_shader_name['tags']) 
+    set_bool_shader_input('Is transparent shader', decoded_shader_name['transparency'] == 'dither' or decoded_shader_name['transparency'] == 'blend')
+    set_bool_shader_input('Is _sp shader', any('specular' in d for d in decoded_shader_name["textures"]))
+    if material.yakuza_data.assume_skinned:
+        set_bool_shader_input('Has imperfection', "h2dz" in shader_name)
 
-    asset_shaders = ("r_","rs_","ss_")
-    sp_shaders = ["ds", "2s", "3s"]
+        if material.yakuza_data.material_origin_type == 4:
+            set_bool_shader_input('Is hair shader', "[hair]" in decoded_shader_name['tags'])
+        else: 
+            set_bool_shader_input('Is hair shader', any(d == 'hair' for d in decoded_shader_name["textures"]))
 
-    set_bool_shader_input('Has imperfection', "h2dz" in attribute_set.shader.name)
-    set_bool_shader_input('Is asset shader', shader_name.startswith(asset_shaders))
-    set_bool_shader_input('Is hair shader', "hair" in shader_name)
-    set_bool_shader_input('Is skin shader', "skin" in shader_name)
-    set_bool_shader_input('Is OE pattern shader', any([x in shader_name for x in PATTERN_SHADERS]))
-    set_bool_shader_input('[rough]', "[rough]" in shader_name)
-    set_bool_shader_input('Is Y3 [rs] shader', "[rd]" not in shader_name and "[rs]" in shader_name)
-    set_bool_shader_input('Is _sp shader', any([x in shader_name for x in sp_shaders]))
+        set_bool_shader_input('Is skin shader', "[skin]" in decoded_shader_name['tags'])
+        set_bool_shader_input('Is OE pattern shader', any([x in shader_name for x in PATTERN_SHADERS]))
+        set_bool_shader_input('Is Y3 [rs] shader', "[rd]" not in decoded_shader_name['tags'] \
+                              and "[rs]" in decoded_shader_name['tags'])
+    else:
+    # ASSET COSMETIC CHECKS
+        def match_mix_mask_cases(mix: str):
+            match mix:
+                case "(vr)" : val = 1
+                case "(va)" : val = 2
+                case "(vr3i)" : val = 3
+                case _: val = 1
+            return(val)
+        def match_mix_cases(mask: str):
+            match mask:
+                case 'blend': val = 1
+                case 'multiply': val = 2
+                case 'add': val = 3
+                case _: val = 0
+            return(val)
 
-    is_transparent_shader = re.compile(rf"^[a-z]+({'|'.join(map(re.escape, transparent_shaders))})")
-    set_bool_shader_input('Is transparent shader', is_transparent_shader.search(shader_name))
+        texture_map = {
+            'diffuse': 'Diffuse',
+            'multi': 'Multi',
+            "multi_asset": "Multi",
+            'specular': 'Multi',
+            'normal': 'Normal',
+        }
+
+        if decoded_shader_name['uvs'] > 1:
+            for texture in decoded_shader_name['textures']:
+                texture_idx = int(texture[-5])
+                texture_uv = int(texture[-1])
+                texture_type = texture[0:-5]
+                
+                if decoded_shader_name['textures'][texture]['mix'] == 'multiply' \
+                and texture_uv == 3 and texture_type == 'diffuse':
+                    yakuza_inputs['Diffuse mix mode'].default_value[2] = 2
+                elif texture_idx != 0 and texture_type in texture_map:        
+                    texture_input = texture_map[texture_type] 
+                    yakuza_inputs[f'{texture_input} mix mode'].default_value[texture_idx - 1] = \
+                        match_mix_cases(decoded_shader_name['textures'][texture]['mix'])
+                    yakuza_inputs[f'{texture_input} mix mask mode'].default_value[texture_idx - 1] = \
+                        match_mix_mask_cases(decoded_shader_name['textures'][texture]['mix_mask'])
 
     # GMDMaterial data
     set_shader_input('GMDMaterial Origin type', material.yakuza_data.material_origin_type, False)
@@ -363,21 +524,17 @@ def set_yakuza_shader_material_from_attributeset(material: bpy.types.Material, y
     if diffuse_tex:
         # Link the texture alpha with the Yakuza Shader, and make the material do hashed or blended alpha
         # (depending on shader), and set shadow method to none.
-        for i in transparent_shaders:
-            regex_test = "^.(" + re.escape(i) + ").+|^..(" + re.escape(i) + ").+"
-
-            if re.search(regex_test, attribute_set.shader.name):
-                material.node_tree.links.new(diffuse_tex.outputs["Alpha"], yakuza_inputs["Diffuse Alpha"])
-                if "_c" in attribute_set.shader.name:
-                    material.blend_method = "HASHED"
-                else:
-                    material.blend_method = "BLEND"
-                try:
-                    # Try setting the shadow method directly
-                    material.shadow_method = "NONE"
-                except AttributeError:
-                    # Handle Blender 4.3+ where shadow_method is removed
-                    print(f"Warning: shadow_method is not available in Blender {bpy.app.version_string}")
+            material.node_tree.links.new(diffuse_tex.outputs["Alpha"], yakuza_inputs["Diffuse Alpha"])
+            if decoded_shader_name['transparency'] == 'blend':
+                material.blend_method = "BLEND"
+            else:
+                material.blend_method = "HASHED"
+            try:
+                # Try setting the shadow method directly
+                material.shadow_method = "NONE"
+            except AttributeError:
+                # Handle Blender 4.3+ where shadow_method is removed
+                print(f"Warning: shadow_method is not available in Blender {bpy.app.version_string}")
 
     # Attach the other textures.
     multi_tex, next_y = set_texture(yakuza_inputs["texture_multi"], attribute_set.texture_multi, next_y,
@@ -394,7 +551,9 @@ def set_yakuza_shader_material_from_attributeset(material: bpy.types.Material, y
     rt_tex, next_y = set_texture(yakuza_inputs["texture_rt"], attribute_set.texture_rt, next_y, DEFAULT_NORMAL_COLOR)
     if rt_tex:
         material.node_tree.links.new(rt_tex.outputs["Alpha"], yakuza_inputs["RT Alpha"])
-    _, next_y = set_texture(yakuza_inputs["texture_rd"], attribute_set.texture_rd, next_y, DEFAULT_DIFFUSE_COLOR)
+    rd_tex, next_y = set_texture(yakuza_inputs["texture_rd"], attribute_set.texture_rd, next_y, DEFAULT_DIFFUSE_COLOR)
+    if rd_tex:
+        material.node_tree.links.new(rd_tex.outputs["Alpha"], yakuza_inputs["RD Alpha"])
 
 
 def append_data_from_yakuza_shader(error: ErrorReporter):
@@ -407,22 +566,26 @@ def append_data_from_yakuza_shader(error: ErrorReporter):
                 f"Couldn't find the node group '{YAKUZA_SHADER_NODE_GROUP}' in the built-in shader .blend library")
         if YAKUZA_UV_SCALER not in data_from.node_groups:
             error.fatal(f"Couldn't find the node group '{YAKUZA_UV_SCALER}' in the built-in shader .blend library")
+        if YAKUZA_ASSET_SHADER_NODE_GROUP not in data_from.node_groups:
+            error.fatal(
+                f"Couldn't find the node group '{YAKUZA_ASSET_SHADER_NODE_GROUP}' in the built-in shader .blend library")
+        if YAKUZA_ASSET_UVS not in data_from.node_groups:
+            error.fatal(f"Couldn't find the node group '{YAKUZA_ASSET_UVS}' in the built-in shader .blend library")
         data_to.node_groups.append(YAKUZA_SHADER_NODE_GROUP)
         data_to.node_groups.append(YAKUZA_UV_SCALER)
-
+        data_to.node_groups.append(YAKUZA_ASSET_SHADER_NODE_GROUP)
+        data_to.node_groups.append(YAKUZA_ASSET_UVS)
 
 def get_yakuza_shader_node_group(error: ErrorReporter):
     """
     Create or retrieve the Yakuza Shader node group, depending on whether it exists.
     :return: The Yakuza Shader node group.
     """
-
     if YAKUZA_SHADER_NODE_GROUP in bpy.data.node_groups:
         return bpy.data.node_groups[YAKUZA_SHADER_NODE_GROUP]
     else:
         append_data_from_yakuza_shader(error)
         return bpy.data.node_groups[YAKUZA_SHADER_NODE_GROUP]
-
 
 def get_uv_scaler_node_group(error: ErrorReporter):
     if YAKUZA_UV_SCALER in bpy.data.node_groups:
@@ -430,3 +593,18 @@ def get_uv_scaler_node_group(error: ErrorReporter):
     else:
         append_data_from_yakuza_shader(error)
         return bpy.data.node_groups[YAKUZA_UV_SCALER]
+
+def get_yakuza_asset_shader_node_group(error: ErrorReporter):
+    if YAKUZA_ASSET_SHADER_NODE_GROUP in bpy.data.node_groups:
+        return bpy.data.node_groups[YAKUZA_ASSET_SHADER_NODE_GROUP]
+    else:
+        append_data_from_yakuza_shader(error)
+        return bpy.data.node_groups[YAKUZA_ASSET_SHADER_NODE_GROUP]
+
+
+def get_asset_uvs_node_group(error: ErrorReporter):
+    if YAKUZA_ASSET_UVS in bpy.data.node_groups:
+        return bpy.data.node_groups[YAKUZA_ASSET_UVS]
+    else:
+        append_data_from_yakuza_shader(error)
+        return bpy.data.node_groups[YAKUZA_ASSET_UVS]
