@@ -73,7 +73,8 @@ class GMDMaterial(GMDVersionRestricted):
                 specular=self.origin_data.specular,
                 power=self.origin_data.power,
                 intensity=self.origin_data.intensity,
-                unk=[0, 0, 0, 0],
+                ambient=self.origin_data.ambient,
+                emissive=self.origin_data.emissive,
             )
         else:
             return self.origin_data

@@ -10,7 +10,7 @@ import bpy
 from bpy.types import ShaderNodeGroup, ShaderNodeTexImage
 from mathutils import Vector
 from ...common import GMDGame, YakuzaFileRootData
-from ...materials import YAKUZA_SHADER_NODE_GROUP, PATTERN_SHADERS, YAKUZA_ASSET_SHADER_NODE_GROUP
+from ...materials import YAKUZA_SHADER_NODE_GROUPS, PATTERN_SHADERS, YAKUZA_GMDMATERIAL_NODEGROUP
 from ...materials import YakuzaPropertyGroup
 from ....gmdlib.abstract.gmd_attributes import GMDAttributeSet, GMDUnk12, GMDUnk14, GMDMaterial
 from ....gmdlib.abstract.gmd_scene import GMDScene, HierarchyData
@@ -194,10 +194,23 @@ class BaseGMDSceneGatherer(abc.ABC):
                 f"Material {material.name} on object {referencing_object.name} does not use nodes, "
                 f"and cannot be exported.\n"
                 f"A Yakuza Material must have valid Yakuza Properties, and must have exactly one Yakuza Shader node.")
-
-        yakuza_shader = YAKUZA_SHADER_NODE_GROUP if material.yakuza_data.assume_skinned else YAKUZA_ASSET_SHADER_NODE_GROUP
+            
+        engine = material.yakuza_data.origin_version
+        skinned = True if material.yakuza_data.assume_skinned else False
+        if skinned and engine >= 4:
+            yakuza_shader = YAKUZA_SHADER_NODE_GROUPS.get('DRAGON_SKINNED_SHADER')
+        elif skinned and engine < 4:
+            yakuza_shader = YAKUZA_SHADER_NODE_GROUPS.get('OLD_SKINNED_SHADER')
+        elif not skinned and engine >= 4: 
+            yakuza_shader = YAKUZA_SHADER_NODE_GROUPS.get('DRAGON_UNSKINNED_SHADER')
+        elif not skinned and engine < 4: 
+            yakuza_shader = YAKUZA_SHADER_NODE_GROUPS.get('OLD_UNSKINNED_SHADER')  
+        gmdmaterial_node =  YAKUZA_GMDMATERIAL_NODEGROUP
+        
         yakuza_shader_nodes = [node for node in material.node_tree.nodes if
                                node.bl_idname == "ShaderNodeGroup" and node.node_tree.name == yakuza_shader]
+        gmdmaterial_nodes =   [node for node in material.node_tree.nodes if
+                               node.bl_idname == "ShaderNodeGroup" and node.node_tree.name == gmdmaterial_node]
         self.error.debug("MATERIAL", str([node.name for node in material.node_tree.nodes]))
         self.error.debug("MATERIAL", str([node.bl_idname for node in material.node_tree.nodes]))
         self.error.debug("MATERIAL", str([node.bl_label for node in material.node_tree.nodes]))
@@ -211,7 +224,18 @@ class BaseGMDSceneGatherer(abc.ABC):
                 f"Material {material.name} on object {referencing_object.name} has multiple Yakuza Shader nodes, "
                 f"and cannot be exported.\n"
                 f"A Yakuza Material must have valid Yakuza Properties, and must have exactly one Yakuza Shader node.")
+        if not gmdmaterial_nodes:
+            self.error.fatal(
+                f"Material {material.name} on object {referencing_object.name} does not have a GMDMaterial data node, "
+                f"and cannot be exported.\n"
+                f"A Yakuza Material must have valid Yakuza Properties, and must have exactly one GMDMaterial data node.")
+        elif len(yakuza_shader_nodes) > 1:
+            self.error.fatal(
+                f"Material {material.name} on object {referencing_object.name} has multiple GMDMaterial data nodes, "
+                f"and cannot be exported.\n"
+                f"A Yakuza Material must have valid Yakuza Properties, and must have exactly GMDMaterial data node.")
         yakuza_shader_node = cast(ShaderNodeGroup, yakuza_shader_nodes[0])
+        gmdmaterial_data_node = cast(ShaderNodeGroup, gmdmaterial_node[0])
 
         yakuza_data: YakuzaPropertyGroup = material.yakuza_data
         vertex_layout_flags = int(yakuza_data.shader_vertex_layout_flags, base=16)
@@ -251,15 +275,13 @@ class BaseGMDSceneGatherer(abc.ABC):
 
         gmd_material_origin_version = floor(yakuza_shader_node.inputs['GMDMaterial Origin type'].default_value)
 
-        diffuse_color = [round(x * 255) for x in yakuza_shader_node.inputs["Diffuse color"].default_value][0:3]
-        specular_color = [round(x * 255) for x in yakuza_shader_node.inputs["Specular color"].default_value][0:3]
-        unknown = [floor(x) for x in yakuza_shader_node.inputs["Unknown"].default_value]
-        unknown.append(floor(yakuza_shader_node.inputs['Unknown W'].default_value))
-        power = yakuza_shader_node.inputs["Specular power"].default_value
-        intensity = yakuza_shader_node.inputs["Specular intensity"].default_value
-        opacity = round(yakuza_shader_node.inputs["Opacity"].default_value*255)
-        ambient = [round(x * 255) for x in yakuza_shader_node.inputs["Ambient color"].default_value][0:3]
-        emissive = yakuza_shader_node.inputs["Emissive"].default_value
+        diffuse_color = [round(x * 255) for x in gmdmaterial_node.inputs["Diffuse color"].default_value][0:3]
+        specular_color = [round(x * 255) for x in gmdmaterial_node.inputs["Specular color"].default_value][0:3]
+        power = gmdmaterial_node.inputs["Specular power"].default_value
+        intensity = gmdmaterial_node.inputs["Specular intensity"].default_value
+        opacity = gmdmaterial_node.inputs["Opacity"].default_value
+        ambient = [round(x * 255) for x in gmdmaterial_node.inputs["Ambient (Y3) / Material params"].default_value][0:3]
+        emissive = gmdmaterial_node.inputs["Emissive (Y3) / Unk"].default_value
         padding = floor(yakuza_shader_node.inputs['Padding'].default_value)
 
         if gmd_material_origin_version == GMDVersion.Kenzan:
@@ -283,9 +305,10 @@ class BaseGMDSceneGatherer(abc.ABC):
                     diffuse=diffuse_color,
                     opacity=opacity,
                     specular=specular_color,
+                    ambient=ambient,
+                    emissive=emissive,
                     power=power,
                     intensity=intensity,
-                    unk=unknown
             )
             )
 

@@ -11,6 +11,7 @@ from bpy.types import NodeSocket, NodeSocketColor, ShaderNodeTexImage, \
     PropertyGroup
 from .common import AttribSetLayerNames
 from .error_reporter import BlenderErrorReporter
+from ..gmdlib.structure.version import GMDVersion
 from ..gmdlib.abstract.gmd_attributes import GMDAttributeSet
 from ..gmdlib.abstract.gmd_shader import GMDVertexBufferLayout
 from ..gmdlib.errors.error_reporter import StrictErrorReporter, ErrorReporter
@@ -149,10 +150,15 @@ class YakuzaTexturePropertyGroup(PropertyGroup):
 
 
 # Inspired by XNALara importer code - https://github.com/johnzero7/XNALaraMesh/blob/eaccfddf39aef8d3cb60a50c05f2585398fe26ca/material_creator.py#L527
-YAKUZA_SHADER_NODE_GROUP = "Neo Yakuza Shader"
+YAKUZA_SHADER_NODE_GROUPS = {
+    "OLD_SKINNED_SHADER" : "Neo Yakuza Shader - OE",
+    "DRAGON_SKINNED_SHADER" : "Neo Yakuza Shader - DE",
+    "OLD_UNSKINNED_SHADER" : "Neo Yakuza Shader (Asset) - OE",
+    "DRAGON_UNSKINNED_SHADER" : "Neo Yakuza Shader (Asset) - DE",
+}
 YAKUZA_SHADER_NODE_GROUP_VERSION = 2 # Futureproofing for whenever the shader is updated
-YAKUZA_ASSET_SHADER_NODE_GROUP = "Neo Yakuza Shader (Asset)"
 YAKUZA_ASSET_SHADER_NODE_GROUP_VERSION = 1
+YAKUZA_GMDMATERIAL_NODEGROUP = 'GMDMaterial data'
 YAKUZA_UV_SCALER = "UV scaler"
 YAKUZA_ASSET_UVS = "Asset UVs"
 PATTERN_SHADERS = ["[rd]", "[rt]", "[rs]", "_m2"]
@@ -247,6 +253,8 @@ def load_texture_from_name(node_tree: bpy.types.NodeTree, gmd_folder: str, tex_n
     return cast(ShaderNodeTexImage, image_node)
 
    # Function to analyze the shader name
+   # This is to guess what type of shader it is. It should be right most of the time until they
+   # decide to change up their shader naming convention.
 def decode_shader_name(shader_name):
     token_split_re = re.compile(r'(?=(?:_[a-zA-Z0-9(])|(?:[0-9]))(?![^\[\(]*[\]\)])')
     tag_re = re.compile(r'\[[^\[\]]+\]?')
@@ -257,7 +265,7 @@ def decode_shader_name(shader_name):
 
     shader_textures_dict = {
         "d": "diffuse",
-        "m": "diffuse",
+        "m": "diffuse_opaque",
         "x": "diffuse",
         "s": "specular",
         "z": "multi",
@@ -280,6 +288,7 @@ def decode_shader_name(shader_name):
         "c": "dither",
         "d": "blend",
         "p": "dither",
+        "a": "blend",
     }
 
     shader_prefixes_dict = {
@@ -363,7 +372,8 @@ def decode_shader_name(shader_name):
     return decoded_shader
 
 def set_yakuza_shader_material_from_attributeset(material: bpy.types.Material, yakuza_inputs: bpy.types.NodeInputs,
-                                                 attribute_set: GMDAttributeSet, gmd_folder: str):
+                                                 gmddata_inputs: bpy.types.NodeInputs, attribute_set: GMDAttributeSet, 
+                                                 gmd_folder: str):
     """
     Given a material and an attribute set, attach all of the relevant data from the attribute set to the material.
     :param material: The material to update
@@ -394,49 +404,41 @@ def set_yakuza_shader_material_from_attributeset(material: bpy.types.Material, y
     ### Handy functions for setting nodegroup inputs!
     shader_name = attribute_set.shader.name
     decoded_shader_name = decode_shader_name(material.yakuza_data.shader_name)
+
+    def nodegroup_to_input(nodegroup: str):
+        match nodegroup:
+            case 'gmddata_inputs': return gmddata_inputs
+            case _: return yakuza_inputs
     # function to set shader input
-    def set_shader_input(input: str, value, ignore_if_doesnt_exist: bool = True):
+    def set_shader_input(input: str, value, ignore_if_doesnt_exist: bool = True, nodegroup = 'yakuza_inputs'):
         try:
-           yakuza_inputs[input].default_value = value
+           nodegroup_to_input(nodegroup)[input].default_value = value
         except Exception as e:
             if ignore_if_doesnt_exist:
                 print(f'WARNING: {e} - Ignored as it is a non-vital input.')
             else:
                 raise(e)
     # function to set shader inputs that are vectors
-    def set_vector_shader_input(input: str, value: list, ignore_if_doesnt_exist: bool = True, 
-                                color: bool = True):
+    def set_vector_shader_input(input: str, value: list, ignore_if_doesnt_exist: bool = True, nodegroup = 'yakuza_inputs'):
         try:
-            if color:
-                yakuza_inputs[input].default_value[0] = value[0]/255
-                yakuza_inputs[input].default_value[1] = value[1]/255
-                yakuza_inputs[input].default_value[2] = value[2]/255
-            else:
-                yakuza_inputs[input].default_value[0] = value[0]
-                yakuza_inputs[input].default_value[1] = value[1]
-                yakuza_inputs[input].default_value[2] = value[2]
+                nodegroup_to_input(nodegroup)[input].default_value[0] = value[0]/255
+                nodegroup_to_input(nodegroup)[input].default_value[1] = value[1]/255
+                nodegroup_to_input(nodegroup)[input].default_value[2] = value[2]/255
         except Exception as e:
             if ignore_if_doesnt_exist:
                 print(f'WARNING: {e} - Ignored as it is a non-vital input.')
             else:
                 raise(e)
-    # function to set booleans to 0/1 in versions before 4.2
-    def v42_bool(input: bool): 
-        if input:
-            return True if bpy.app.version >= (4, 2, 0) else 1
-        else:
-            return False if bpy.app.version >= (4, 2, 0) else 0
     # function to set boolean shader inputs
-    def set_bool_shader_input(input: str, if_condition: bool, ignore_if_doesnt_exist: bool = True):
+    def set_bool_shader_input(input: str, if_condition: bool, ignore_if_doesnt_exist: bool = True, nodegroup = 'yakuza_inputs'):
         if if_condition:
-            set_shader_input(input, v42_bool(True), ignore_if_doesnt_exist)
+            set_shader_input(input, True if bpy.app.version >= (4, 2, 0) else 1, ignore_if_doesnt_exist, nodegroup)
         else:
-            set_shader_input(input, v42_bool(False), ignore_if_doesnt_exist)     
-    
+            set_shader_input(input, False if bpy.app.version >= (4, 2, 0) else 0, ignore_if_doesnt_exist, nodegroup)
     # COSMETIC VALUE CHECKS
     set_bool_shader_input('[rough]', "[rough]" in decoded_shader_name['tags']) 
-    set_bool_shader_input('Uses opacity', decoded_shader_name['transparency'] == 'blend')
     set_bool_shader_input('Is _sp shader', any('specular' in d for d in decoded_shader_name["textures"]))
+    set_bool_shader_input('Is opaque shader', decoded_shader_name['transparency'] == 'opaque')
     if material.yakuza_data.assume_skinned:
         set_bool_shader_input('Has imperfection', "h2dz" in shader_name)
 
@@ -490,20 +492,28 @@ def set_yakuza_shader_material_from_attributeset(material: bpy.types.Material, y
                     yakuza_inputs[f'{texture_input} mix mask mode'].default_value[texture_idx - 1] = \
                         match_mix_mask_cases(decoded_shader_name['textures'][texture]['mix_mask'])
 
+        diffuse_alpha_flags = ['1','1','1','1']
+        # 0 - doesnt use alpha (diffuse_opaque), # 1 - uses alpha (diffuse), default behavior is 1
+        # bit order: diffuse0, diffuse1, diffuse2, diffuse3
+        if material.yakuza_data.material_origin_type != 4: #doesnt exist in DE so it should always be 1111
+            if any('diffuse_opaque' in d for d in decoded_shader_name['textures']):    
+                for texture in decoded_shader_name['textures']:
+                    texture_idx = int(texture[-5])  
+                    if texture[0:-5] == 'diffuse_opaque':
+                        diffuse_alpha_flags[texture_idx] =  '0'
+            set_shader_input('Diffuse alpha flags', int(''.join(diffuse_alpha_flags), 2))
+
+
     # GMDMaterial data
     set_shader_input('GMDMaterial Origin type', material.yakuza_data.material_origin_type, False)
-    set_vector_shader_input('Diffuse color', attribute_set.material.origin_data.diffuse, False)
-    set_shader_input('Opacity',attribute_set.material.origin_data.opacity / 255, False)
-    set_vector_shader_input('Specular color', attribute_set.material.origin_data.specular, False)
-    set_shader_input('Specular power',attribute_set.material.origin_data.power, False)
-    set_shader_input('Specular intensity',attribute_set.material.origin_data.intensity, False)
+    set_vector_shader_input('Diffuse color', attribute_set.material.origin_data.diffuse, False, 'gmddata_inputs')
+    set_shader_input('Opacity',attribute_set.material.origin_data.opacity, False, 'gmddata_inputs')
+    set_vector_shader_input('Specular color', attribute_set.material.origin_data.specular, False, 'gmddata_inputs')
+    set_shader_input('Specular power',attribute_set.material.origin_data.power, False, 'gmddata_inputs')
+    set_shader_input('Specular intensity',attribute_set.material.origin_data.intensity, False, 'gmddata_inputs')
     set_shader_input('Padding', attribute_set.material.origin_data.padding, False)
-    if material.yakuza_data.material_origin_type == 1:
-        set_vector_shader_input('Ambient color', attribute_set.material.origin_data.ambient, False)
-        set_shader_input('Emissive', attribute_set.material.origin_data.emissive, False)
-    else:
-        set_vector_shader_input('Unknown',attribute_set.material.origin_data.unk, False, False)
-        set_shader_input('Unknown W',attribute_set.material.origin_data.unk[3], False)
+    set_vector_shader_input('Ambient (Y3) / Material params', attribute_set.material.origin_data.ambient, False, 'gmddata_inputs')
+    set_shader_input('Emissive (Y3) / Unk', attribute_set.material.origin_data.emissive, False, 'gmddata_inputs')
 
     # Convenience function for creating a texture node for an Optional texture
     def set_texture(set_into: NodeSocketColor, tex_name: Optional[str],
@@ -561,46 +571,57 @@ def append_data_from_yakuza_shader(error: ErrorReporter):
 
     file_path = Path(__file__).parent / blend_file
     with bpy.data.libraries.load(str(file_path)) as (data_from, data_to):
-        if YAKUZA_SHADER_NODE_GROUP not in data_from.node_groups:
-            error.fatal(
-                f"Couldn't find the node group '{YAKUZA_SHADER_NODE_GROUP}' in the built-in shader .blend library")
+        for node_group in YAKUZA_SHADER_NODE_GROUPS:
+            if YAKUZA_SHADER_NODE_GROUPS[node_group] not in data_from.node_groups:
+                error.fatal(
+                    f"Couldn't find the node group '{YAKUZA_SHADER_NODE_GROUPS[node_group]}' in the built-in shader .blend library")
+            data_to.node_groups.append(YAKUZA_SHADER_NODE_GROUPS[node_group])
+
+        if YAKUZA_GMDMATERIAL_NODEGROUP not in data_from.node_groups:
+            error.fatal(f"Couldn't find the node group '{YAKUZA_GMDMATERIAL_NODEGROUP}' in the built-in shader .blend library")
         if YAKUZA_UV_SCALER not in data_from.node_groups:
             error.fatal(f"Couldn't find the node group '{YAKUZA_UV_SCALER}' in the built-in shader .blend library")
-        if YAKUZA_ASSET_SHADER_NODE_GROUP not in data_from.node_groups:
-            error.fatal(
-                f"Couldn't find the node group '{YAKUZA_ASSET_SHADER_NODE_GROUP}' in the built-in shader .blend library")
         if YAKUZA_ASSET_UVS not in data_from.node_groups:
             error.fatal(f"Couldn't find the node group '{YAKUZA_ASSET_UVS}' in the built-in shader .blend library")
-        data_to.node_groups.append(YAKUZA_SHADER_NODE_GROUP)
+        data_to.node_groups.append(YAKUZA_GMDMATERIAL_NODEGROUP)
         data_to.node_groups.append(YAKUZA_UV_SCALER)
-        data_to.node_groups.append(YAKUZA_ASSET_SHADER_NODE_GROUP)
         data_to.node_groups.append(YAKUZA_ASSET_UVS)
 
-def get_yakuza_shader_node_group(error: ErrorReporter):
+def get_yakuza_shader_node_groups(error: ErrorReporter, attribute_set: GMDAttributeSet):
     """
     Create or retrieve the Yakuza Shader node group, depending on whether it exists.
     :return: The Yakuza Shader node group.
     """
+    engine = attribute_set.material.origin_version
+    skinned = True if attribute_set.shader.assume_skinned else False
+    if skinned and engine == GMDVersion.Dragon:
+        YAKUZA_SHADER_NODE_GROUP = YAKUZA_SHADER_NODE_GROUPS['DRAGON_SKINNED_SHADER']
+    elif skinned and engine != GMDVersion.Dragon:
+        YAKUZA_SHADER_NODE_GROUP = YAKUZA_SHADER_NODE_GROUPS['OLD_SKINNED_SHADER']
+    elif not skinned and engine == GMDVersion.Dragon: 
+        YAKUZA_SHADER_NODE_GROUP = YAKUZA_SHADER_NODE_GROUPS['DRAGON_UNSKINNED_SHADER']
+    elif not skinned and engine != GMDVersion.Dragon: 
+        YAKUZA_SHADER_NODE_GROUP = YAKUZA_SHADER_NODE_GROUPS['OLD_UNSKINNED_SHADER']
+
     if YAKUZA_SHADER_NODE_GROUP in bpy.data.node_groups:
         return bpy.data.node_groups[YAKUZA_SHADER_NODE_GROUP]
     else:
         append_data_from_yakuza_shader(error)
         return bpy.data.node_groups[YAKUZA_SHADER_NODE_GROUP]
 
+def get_gmdmaterial_data_node_group(error: ErrorReporter):
+    if YAKUZA_GMDMATERIAL_NODEGROUP in bpy.data.node_groups:
+        return bpy.data.node_groups[YAKUZA_GMDMATERIAL_NODEGROUP]
+    else:
+        append_data_from_yakuza_shader(error)
+        return bpy.data.node_groups[YAKUZA_GMDMATERIAL_NODEGROUP]
+    
 def get_uv_scaler_node_group(error: ErrorReporter):
     if YAKUZA_UV_SCALER in bpy.data.node_groups:
         return bpy.data.node_groups[YAKUZA_UV_SCALER]
     else:
         append_data_from_yakuza_shader(error)
         return bpy.data.node_groups[YAKUZA_UV_SCALER]
-
-def get_yakuza_asset_shader_node_group(error: ErrorReporter):
-    if YAKUZA_ASSET_SHADER_NODE_GROUP in bpy.data.node_groups:
-        return bpy.data.node_groups[YAKUZA_ASSET_SHADER_NODE_GROUP]
-    else:
-        append_data_from_yakuza_shader(error)
-        return bpy.data.node_groups[YAKUZA_ASSET_SHADER_NODE_GROUP]
-
 
 def get_asset_uvs_node_group(error: ErrorReporter):
     if YAKUZA_ASSET_UVS in bpy.data.node_groups:

@@ -9,11 +9,13 @@ from ....structurelib.primitives import *
 @dataclass(frozen=False)
 class MaterialStruct_Y3(MaterialBaseStruct):
     diffuse: List[int]
-    opacity: int
+    opacity: float
     specular: List[int]
+    ambient: List[int]
+    emissive: float
+
     power: float
     intensity: float
-    unk: List[int]
 
     padding: int = 0
 
@@ -29,8 +31,9 @@ MaterialStruct_Y3_Unpack = StructureUnpacker(
         ("padding", c_uint8),
 
         ("diffuse", FixedSizeArrayUnpacker(c_uint8, 3)),
-        ("opacity", c_uint8),
-
-        ("unk", FixedSizeArrayUnpacker(c_uint8, 4))
+        ("opacity", c_unorm8),
+        
+        ("ambient", FixedSizeArrayUnpacker(c_uint8, 3)),
+        ("emissive", c_unorm8)
     ]
 )
