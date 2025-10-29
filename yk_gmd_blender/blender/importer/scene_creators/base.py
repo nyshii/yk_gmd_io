@@ -264,11 +264,12 @@ class BaseGMDSceneCreator(abc.ABC):
                 for x in range(16):
                     uv_scaler_node.inputs[x].default_value = mat_yk_data.unk12[x]
 
-                def connect_uvs(texture_input,uv,texture_type,socket):
-                    if socket.to_socket.name == texture_input:
+                def connect_uvs(texture_input,uv,texture_type,image_node):
+                    output_socket_name = image_node.outputs[0].links[0].to_socket.name
+                    if output_socket_name == texture_input and not image_node.inputs[0].is_linked:
                         uv = (uv * 3) + texture_type
                         print(f'DEBUG: {texture_input} uv: {uv}')
-                        material.node_tree.links.new(uv_scaler_node.outputs[uv], socket.from_node.inputs[0])
+                        material.node_tree.links.new(uv_scaler_node.outputs[uv], image.inputs[0])
                 
                 diffuse_priority = ('texture_diffuse', 'texture_refl', 'texture_rd') if enginever != GMDVersion.Dragon \
                 else ('texture_diffuse', 'texture_rd', 'texture_refl')
@@ -278,6 +279,7 @@ class BaseGMDSceneCreator(abc.ABC):
 
                 texture_types = {
                     'diffuse' : (0, diffuse_priority),
+                    'diffuse_opaque' : (0, diffuse_priority),
                     'multi' : (1, multi_priority),
                     'multi_asset' : (1, multi_priority),
                     'specular' : (1, multi_priority),
@@ -285,36 +287,34 @@ class BaseGMDSceneCreator(abc.ABC):
                 }
 
                 uv_scaler_node.location = (-800, -300)
-                for socket in material.node_tree.links:
+                for image in [img for img in material.node_tree.nodes if img.bl_idname == 'ShaderNodeTexImage']:
                     for tex in decoded_shader_name['textures']:
                         tex_UV = int(tex[-1])
                         tex_IDX = int(tex[-5])
                         texture_type = texture_types.get(tex[0:-5],(0,'texture_diffuse'))
-                        
                         if decoded_shader_name['textures'][tex]['mix'] == 'multiply' \
                         and tex_UV == 3 and tex[0:-5] == 'diffuse':
-                            connect_uvs('texture_rd',3,0,socket)
+                            connect_uvs('texture_rd',3,0,image)
                         if decoded_shader_name['textures'][tex]['mix'] == 'add' \
                         and tex_UV == 1 and tex[0:-5] == 'diffuse':
-                            connect_uvs('texture_refl',1,0,socket)
-                        
+                            connect_uvs('texture_refl',1,0,image)
                         elif len(texture_type[1]) >= tex_IDX + 1:
                             connect_uvs(
                                 texture_type[1][tex_IDX],
                                 tex_UV,
                                 texture_type[0],
-                                socket
+                                image
                             )
                         
-
-                    if socket.to_socket.name == 'texture_rs' and \
+                    socket = image.outputs[0].links[0].to_socket.name
+                    if socket == 'texture_rs' and \
                     any('3i' in d['mix_mask'] for d in decoded_shader_name["textures"].values()) and \
                         enginever == GMDVersion.Dragon:
-                            material.node_tree.links.new(uv_scaler_node.outputs[6], socket.from_node.inputs[0])
-                    if socket.to_socket.name == 'texture_multi' and \
+                            material.node_tree.links.new(uv_scaler_node.outputs[6], image.inputs[0])
+                    if socket == 'texture_multi' and \
                     any('3i' in d['mix_mask'] for d in decoded_shader_name["textures"].values()) and \
                         enginever != GMDVersion.Dragon:
-                            material.node_tree.links.new(uv_scaler_node.outputs[6], socket.from_node.inputs[0])
+                            material.node_tree.links.new(uv_scaler_node.outputs[6], image.inputs[0])
 
         self.material_id_to_blender[id(gmd_attribute_set)] = material
         return material
