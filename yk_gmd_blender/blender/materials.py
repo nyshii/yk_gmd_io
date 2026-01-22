@@ -439,7 +439,6 @@ def set_yakuza_shader_material_from_attributeset(material: bpy.types.Material, y
     set_bool_shader_input('[rough]', "[rough]" in decoded_shader_name['tags']) 
     set_bool_shader_input('Is _sp shader', any('specular' in d for d in decoded_shader_name["textures"]))
     set_bool_shader_input('Is opaque shader', decoded_shader_name['transparency'] == 'opaque')
-    set_bool_shader_input('Is _m4d shader', '_m4d' in shader_name)
     
     if material.yakuza_data.assume_skinned:
         set_bool_shader_input('Has imperfection', "h2dz" in shader_name)
@@ -455,6 +454,10 @@ def set_yakuza_shader_material_from_attributeset(material: bpy.types.Material, y
                               and "[rs]" in decoded_shader_name['tags'])
     else:
     # ASSET COSMETIC CHECKS
+        set_bool_shader_input('Is mul shader', '[mul]' in decoded_shader_name['tags'])
+        set_bool_shader_input('Is emissive shader', '_a2d' in shader_name)
+        set_bool_shader_input('Is _m4d shader', '_m4d' in shader_name)
+
         def match_mix_mask_cases(mix: str):
             match mix:
                 case "(vr)" : val = 1
